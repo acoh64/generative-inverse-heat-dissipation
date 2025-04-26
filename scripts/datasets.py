@@ -1,14 +1,20 @@
 """Some parts based on https://github.com/yang-song/score_sde_pytorch"""
 
-from torch.utils.data import DataLoader, Dataset
-import numpy as np
-from mpi4py import MPI
+import os
+
+# Import custom dataset
+import sys
+
 import blobfile as bf
-from torch.utils.data import Dataset, DataLoader
-from torchvision import datasets
-from torchvision import transforms, datasets
+import numpy as np
 import torch
+from mpi4py import MPI
 from PIL import Image
+from torch.utils.data import DataLoader, Dataset
+from torchvision import datasets, transforms
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from custom_npy_dataset import get_npy_dataloaders
 
 
 class UniformDequantize(object):
@@ -16,23 +22,32 @@ class UniformDequantize(object):
         pass
 
     def __call__(self, sample):
-        return (torch.rand(sample.shape) + sample*255.)/256.
+        return (torch.rand(sample.shape) + sample * 255.0) / 256.0
 
 
-def get_dataset(config, uniform_dequantization=False, train_batch_size=None,
-                eval_batch_size=None, num_workers=8):
+def get_dataset(
+    config,
+    uniform_dequantization=False,
+    train_batch_size=None,
+    eval_batch_size=None,
+    num_workers=8,
+):
     """
     Get Pytorch dataloaders for one of the following datasets:
-    MNIST, CIFAR-10, LSUN-Church, FFHQ, AFHQ
+    MNIST, CIFAR-10, LSUN-Church, FFHQ, AFHQ, CUSTOM_NPY
     MNIST and CIFAR-10 are loaded through torchvision, others have to be
     downloaded separately to the data/ folder from the following sources:
     https://github.com/NVlabs/ffhq-dataset
     https://github.com/clovaai/stargan-v2/blob/master/README.md#animal-faces-hq-dataset-afhq
     https://github.com/fyu/lsun
+
+    CUSTOM_NPY is loaded from a specified .npy file path defined in config.
     """
 
-    transform = [transforms.Resize(config.data.image_size),
-                 transforms.CenterCrop(config.data.image_size)]
+    transform = [
+        transforms.Resize(config.data.image_size),
+        transforms.CenterCrop(config.data.image_size),
+    ]
     if config.data.random_flip:
         transform.append(transforms.RandomHorizontalFlip())
     transform.append(transforms.ToTensor())
@@ -45,45 +60,87 @@ def get_dataset(config, uniform_dequantization=False, train_batch_size=None,
     if not eval_batch_size:
         eval_batch_size = config.eval.batch_size
 
-    if config.data.dataset == 'MNIST':
+    if config.data.dataset == "MNIST":
         training_data = datasets.MNIST(
-            root="data", train=True, download=True, transform=transform)
+            root="data", train=True, download=True, transform=transform
+        )
         test_data = datasets.MNIST(
-            root="data", train=False, download=True, transform=transform)
-    elif config.data.dataset == 'CIFAR10':
+            root="data", train=False, download=True, transform=transform
+        )
+    elif config.data.dataset == "CIFAR10":
         training_data = datasets.CIFAR10(
-            root="data", train=True, download=True, transform=transform)
+            root="data", train=True, download=True, transform=transform
+        )
         test_data = datasets.CIFAR10(
-            root="data", train=False, download=True, transform=transform)
+            root="data", train=False, download=True, transform=transform
+        )
     elif config.data.dataset == "lsun_church":
         training_data = datasets.LSUN(
-            root="data/lsun", classes=['church_outdoor_train'], transform=transform)
+            root="data/lsun", classes=["church_outdoor_train"], transform=transform
+        )
         test_data = datasets.LSUN(
-            root="data/lsun", classes=['church_outdoor_val'], transform=transform)
-    elif config.data.dataset == 'FFHQ':
-        trainloader = load_data(data_dir="data/ffhq-dataset/images1024x1024",
-                                batch_size=train_batch_size, image_size=config.data.image_size,
-                                random_flip=config.data.random_flip)
-        testloader = load_data(data_dir="data/ffhq-dataset/images1024x1024",
-                               batch_size=eval_batch_size, image_size=config.data.image_size,
-                               random_flip=False)
+            root="data/lsun", classes=["church_outdoor_val"], transform=transform
+        )
+    elif config.data.dataset == "FFHQ":
+        trainloader = load_data(
+            data_dir="data/ffhq-dataset/images1024x1024",
+            batch_size=train_batch_size,
+            image_size=config.data.image_size,
+            random_flip=config.data.random_flip,
+        )
+        testloader = load_data(
+            data_dir="data/ffhq-dataset/images1024x1024",
+            batch_size=eval_batch_size,
+            image_size=config.data.image_size,
+            random_flip=False,
+        )
         return trainloader, testloader
-    elif config.data.dataset == 'AFHQ':
-        trainloader = load_data(data_dir="data/afhq/train",
-                                batch_size=train_batch_size, image_size=config.data.image_size,
-                                random_flip=config.data.random_flip)
-        testloader = load_data(data_dir="data/afhq/val",
-                               batch_size=eval_batch_size, image_size=config.data.image_size,
-                               random_flip=False)
+    elif config.data.dataset == "AFHQ":
+        trainloader = load_data(
+            data_dir="data/afhq/train",
+            batch_size=train_batch_size,
+            image_size=config.data.image_size,
+            random_flip=config.data.random_flip,
+        )
+        testloader = load_data(
+            data_dir="data/afhq/val",
+            batch_size=eval_batch_size,
+            image_size=config.data.image_size,
+            random_flip=False,
+        )
         return trainloader, testloader
+    elif config.data.dataset == "CUSTOM_NPY":
+        # Load data from npy file specified in config
+        return get_npy_dataloaders(
+            npy_train_file=config.data.npy_file_path,
+            npy_test_file=(
+                config.data.test_npy_file_path
+                if hasattr(config.data, "test_npy_file_path")
+                else None
+            ),
+            config=config,
+            transform=transform,
+            train_batch_size=train_batch_size,
+            eval_batch_size=eval_batch_size,
+        )
     else:
         raise ValueError
 
     # If we didn't use the load_data function that already created data loaders:
-    trainloader = DataLoader(training_data, batch_size=train_batch_size,
-                             shuffle=True, num_workers=4, pin_memory=True)
-    testloader = DataLoader(test_data, batch_size=eval_batch_size,
-                            shuffle=True, num_workers=4, pin_memory=True)
+    trainloader = DataLoader(
+        training_data,
+        batch_size=train_batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+    )
+    testloader = DataLoader(
+        test_data,
+        batch_size=eval_batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+    )
 
     return trainloader, testloader
 
@@ -93,8 +150,13 @@ def get_dataset(config, uniform_dequantization=False, train_batch_size=None,
 
 
 def load_data(
-        *, data_dir, batch_size, image_size, class_cond=False, deterministic=False,
-        random_flip=True
+    *,
+    data_dir,
+    batch_size,
+    image_size,
+    class_cond=False,
+    deterministic=False,
+    random_flip=True
 ):
     """
     NOTE: Change to original function, returns the Pytorch dataloader, not a generator
@@ -128,7 +190,7 @@ def load_data(
         classes=classes,
         shard=MPI.COMM_WORLD.Get_rank(),
         num_shards=MPI.COMM_WORLD.Get_size(),
-        random_flip=random_flip
+        random_flip=random_flip,
     )
     if deterministic:
         loader = DataLoader(
@@ -154,8 +216,15 @@ def _list_image_files_recursively(data_dir):
 
 
 class ImageDataset(Dataset):
-    def __init__(self, resolution, image_paths, classes=None, shard=0, num_shards=1,
-                 random_flip=True):
+    def __init__(
+        self,
+        resolution,
+        image_paths,
+        classes=None,
+        shard=0,
+        num_shards=1,
+        random_flip=True,
+    ):
         super().__init__()
         self.resolution = resolution
         self.local_images = image_paths[shard:][::num_shards]
@@ -192,8 +261,7 @@ class ImageDataset(Dataset):
         arr = np.array(pil_image.convert("RGB"))
         crop_y = (arr.shape[0] - self.resolution) // 2
         crop_x = (arr.shape[1] - self.resolution) // 2
-        arr = arr[crop_y: crop_y + self.resolution,
-                  crop_x: crop_x + self.resolution]
+        arr = arr[crop_y : crop_y + self.resolution, crop_x : crop_x + self.resolution]
         # Changed here so that not centered at zero
         # arr = arr.astype(np.float32) / 127.5 - 1
         arr = arr.astype(np.float32) / 255
